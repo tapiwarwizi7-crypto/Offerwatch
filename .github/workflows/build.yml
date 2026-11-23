@@ -58,11 +58,11 @@ jobs:
               namespace 'com.offerwatch'
               compileSdk 34
               defaultConfig {
-                  applicationId 'com.offerwatch'
+                  applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 1
-                  versionName '0.1'
+                  versionCode 2
+                  versionName '0.2'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -75,7 +75,7 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application
-                  android:label="OfferWatch"
+                  android:label="OfferWatch 2"
                   android:theme="@android:style/Theme.Material.Light">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
@@ -86,7 +86,7 @@ jobs:
                   <service
                       android:name=".OfferService"
                       android:exported="true"
-                      android:label="OfferWatch"
+                      android:label="OfferWatch 2"
                       android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
                       <intent-filter>
                           <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -285,8 +285,8 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "Service is ON. Open the Bolt driver app and wait for a ride request."
-                          : "Service is OFF. Tap the button below, find OfferWatch and turn it on.");
+                          ? "OfferWatch 2. Service is ON. Open the Bolt driver app and wait for a ride request."
+                          : "OfferWatch 2. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
                   dump.setText(t.isEmpty() ? "No captures yet." : t);
               }
