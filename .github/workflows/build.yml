@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 5
-                  versionName '0.5'
+                  versionCode 6
+                  versionName '0.6'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -188,9 +188,22 @@ jobs:
                       "alexandra"
               };
 
+              // Green corner (top-left) when the DROP-OFF address contains any of these (malls, hubs, busy places
+              // where a return trip is likely). Edit this list to match where YOU find return trips.
+              static final String[] BUSY_DROP = {
+                      "sandton city", "nelson mandela square", "sandton gate", "woodmead",
+                      "rosebank mall", "the zone", "hyde park corner", "melrose arch",
+                      "mall of africa", "eastgate", "westgate", "southgate", "cresta",
+                      "fourways mall", "northgate", "clearwater mall", "greenstone",
+                      "brightwater", "the glen", "killarney mall", "bruma lake",
+                      "o.r. tambo", "or tambo", "o r tambo", "oliver tambo",
+                      "gautrain", "park station"
+              };
+
               static String match(String text, String[] list) {
                   if (text == null) return null;
-                  String t = text.toLowerCase(Locale.ROOT);
+                  // ignore street names such as 'Alexandra Street' so they don't count as the township
+                  String t = text.toLowerCase(Locale.ROOT).replaceAll("alexandra\\s+(street|st|road|rd|avenue|ave|drive|dr|lane|ln|crescent|close|way)\\b", " ");
                   for (String s : list) {
                       if (t.contains(s)) return s;
                   }
@@ -200,9 +213,13 @@ jobs:
               static class CornerView extends View {
                   final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
                   final Path path = new Path();
+                  final int color;
+                  final boolean left;
 
-                  CornerView(Context c) {
+                  CornerView(Context c, int color, boolean left) {
                       super(c);
+                      this.color = color;
+                      this.left = left;
                   }
 
                   @Override
@@ -210,12 +227,18 @@ jobs:
                       int w = getWidth();
                       int hh = getHeight();
                       path.reset();
-                      path.moveTo(0, 0);
-                      path.lineTo(w, 0);
-                      path.lineTo(w, hh);
+                      if (left) {
+                          path.moveTo(0, 0);
+                          path.lineTo(w, 0);
+                          path.lineTo(0, hh);
+                      } else {
+                          path.moveTo(0, 0);
+                          path.lineTo(w, 0);
+                          path.lineTo(w, hh);
+                      }
                       path.close();
                       p.setStyle(Paint.Style.FILL);
-                      p.setColor(0xFFAA00FF);
+                      p.setColor(color);
                       c.drawPath(path, p);
                   }
               }
@@ -231,6 +254,7 @@ jobs:
               FrameLayout banner;
               TextView bannerText;
               CornerView corner;
+              CornerView cornerBusy;
               long lastRun = 0;
               String lastKey = "";
               String lastUnparsed = "";
@@ -332,6 +356,9 @@ jobs:
                   }
                   boolean avoid = avoidName != null;
                   boolean cornerOn = !places.isEmpty() && match(places.get(0), AVOID_PICKUP) != null;
+                  String pickAddr = places.isEmpty() ? "" : places.get(0);
+                  String dropAddr = places.size() > 1 ? places.get(1) : "";
+                  boolean busyDrop = match(dropAddr, BUSY_DROP) != null;
                   String verdict;
                   int bg;
                   int fg = Color.WHITE;
@@ -354,18 +381,24 @@ jobs:
                   if (mins > 0) {
                       l3 += String.format(Locale.US, " (R%.0f/h)", profit / (mins / 60.0));
                   }
-                  String key = verdict + l2 + l3 + cornerOn;
+                  String l4 = "";
+                  if (!busyDrop && trip >= 10.0) {
+                      double worst = profit - trip * cost;
+                      l4 = String.format(Locale.US, "Not a busy drop-off. If return is empty: profit about R%.0f", worst);
+                  }
+                  String key = verdict + l2 + l3 + l4 + cornerOn + busyDrop;
                   if (key.equals(lastKey) && banner != null) {
                       h.removeCallbacks(hideTask);
                       h.postDelayed(hideTask, 20000);
                       return;
                   }
                   lastKey = key;
-                  showBanner(verdict + "\n" + l2 + "\n" + l3, bg, fg, cornerOn);
-                  save("OFFER", l2 + " | " + l3 + " -> " + verdict + (cornerOn ? " [PURPLE CORNER pickup: " + places.get(0) + "]" : ""));
+                  showBanner(verdict + "\n" + l2 + "\n" + l3 + (l4.isEmpty() ? "" : "\n" + l4), bg, fg, cornerOn, busyDrop);
+                  save("OFFER", l2 + " | " + l3 + " -> " + verdict + (cornerOn ? " [PURPLE CORNER]" : "")
+                          + (busyDrop ? " [GREEN CORNER busy drop-off]" : "") + "\nPICKUP: " + pickAddr + "\nDROP-OFF: " + dropAddr);
               }
 
-              void showBanner(String text, int bg, int fg, boolean showCorner) {
+              void showBanner(String text, int bg, int fg, boolean showCorner, boolean showBusy) {
                   try {
                       if (wm == null) wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
                       if (banner == null) {
@@ -379,11 +412,15 @@ jobs:
                           fl.addView(tv, new FrameLayout.LayoutParams(
                                   FrameLayout.LayoutParams.MATCH_PARENT,
                                   FrameLayout.LayoutParams.WRAP_CONTENT));
-                          CornerView cv = new CornerView(this);
+                          CornerView cv = new CornerView(this, 0xFFAA00FF, false);
                           int size = (int) (56 * d);
                           FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(size, size);
                           clp.gravity = Gravity.TOP | Gravity.END;
                           fl.addView(cv, clp);
+                          CornerView cb = new CornerView(this, 0xFF00E676, true);
+                          FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(size, size);
+                          blp.gravity = Gravity.TOP | Gravity.START;
+                          fl.addView(cb, blp);
                           WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                                   WindowManager.LayoutParams.MATCH_PARENT,
                                   WindowManager.LayoutParams.WRAP_CONTENT,
@@ -397,11 +434,13 @@ jobs:
                           banner = fl;
                           bannerText = tv;
                           corner = cv;
+                          cornerBusy = cb;
                       }
                       bannerText.setText(text);
                       bannerText.setBackgroundColor(bg);
                       bannerText.setTextColor(fg);
                       corner.setVisibility(showCorner ? View.VISIBLE : View.GONE);
+                      cornerBusy.setVisibility(showBusy ? View.VISIBLE : View.GONE);
                       h.removeCallbacks(hideTask);
                       h.postDelayed(hideTask, 20000);
                   } catch (Exception ex) {
@@ -423,7 +462,7 @@ jobs:
               void demo() {
                   lastKey = "";
                   showBanner("ACCEPT (test)\nR45.00 | 6.0 km total | R7.50/km\nPickup 1.0 km | profit about R30",
-                          0xEE2E7D32, Color.WHITE, true);
+                          0xEE2E7D32, Color.WHITE, true, true);
                   h.removeCallbacks(hideTask);
                   h.postDelayed(hideTask, 6000);
               }
@@ -592,8 +631,8 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "OfferWatch 2 v5. Service is ON. Open Bolt and go online. A colored banner shows on each request."
-                          : "OfferWatch 2 v5. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
+                          ? "OfferWatch 2 v6. Service is ON. Open Bolt and go online. A colored banner shows on each request."
+                          : "OfferWatch 2 v6. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
                   dump.setText(t.isEmpty() ? "No offers logged yet." : t);
               }
