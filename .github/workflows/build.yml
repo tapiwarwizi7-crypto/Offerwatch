@@ -116,6 +116,7 @@ jobs:
               static final String FILE = "captures.txt";
               long lastRun = 0;
               String lastText = "";
+              java.util.HashSet<String> seen = new java.util.HashSet<>();
 
               @Override
               protected void onServiceConnected() {
@@ -133,7 +134,10 @@ jobs:
               public void onAccessibilityEvent(AccessibilityEvent e) {
                   if (e.getPackageName() == null) return;
                   String p = e.getPackageName().toString();
-                  if (!p.equals("ee.mtakso.driver") && !p.equals("com.ubercab.driver")) return;
+                  if (p.equals(getPackageName())) return;
+                  if (seen.add(p)) save("seen-package", p);
+                  boolean driver = p.contains("bolt") || p.contains("mtakso") || p.contains("uber");
+                  if (!driver) return;
                   long now = System.currentTimeMillis();
                   if (now - lastRun < 400) return;
                   lastRun = now;
@@ -143,7 +147,7 @@ jobs:
                   StringBuilder sb = new StringBuilder();
                   walk(root, sb, 0);
                   String t = sb.toString();
-                  if (!t.toLowerCase(Locale.ROOT).contains("km")) return;
+                  if (t.isEmpty()) t = "(no readable text)";
                   if (t.equals(lastText)) return;
                   lastText = t;
                   save(p, t);
@@ -176,7 +180,9 @@ jobs:
                       FileOutputStream out = new FileOutputStream(f);
                       out.write(all.getBytes("UTF-8"));
                       out.close();
-                      Toast.makeText(this, "OfferWatch captured a screen", Toast.LENGTH_SHORT).show();
+                      if (!pkg.equals("seen-package")) {
+                          Toast.makeText(this, "OfferWatch captured a screen", Toast.LENGTH_SHORT).show();
+                      }
                   } catch (Exception ex) {
                       // ignore
                   }
