@@ -25,6 +25,7 @@ jobs:
       - name: Write project files
         run: |
           mkdir -p app/src/main/java/com/offerwatch
+          mkdir -p app/src/main/res/xml
 
           cat > settings.gradle <<'EOF'
           pluginManagement {
@@ -61,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 2
-                  versionName '0.2'
+                  versionCode 3
+                  versionName '0.3'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -91,16 +92,29 @@ jobs:
                       <intent-filter>
                           <action android:name="android.accessibilityservice.AccessibilityService" />
                       </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/service_config" />
                   </service>
               </application>
           </manifest>
+          EOF
+
+          cat > app/src/main/res/xml/service_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+              android:canRetrieveWindowContent="true"
+              android:isAccessibilityTool="true"
+              android:notificationTimeout="100" />
           EOF
 
           cat > app/src/main/java/com/offerwatch/OfferService.java <<'EOF'
           package com.offerwatch;
 
           import android.accessibilityservice.AccessibilityService;
-          import android.accessibilityservice.AccessibilityServiceInfo;
           import android.view.accessibility.AccessibilityEvent;
           import android.view.accessibility.AccessibilityNodeInfo;
           import android.widget.Toast;
@@ -119,18 +133,6 @@ jobs:
               java.util.HashSet<String> seen = new java.util.HashSet<>();
 
               @Override
-              protected void onServiceConnected() {
-                  AccessibilityServiceInfo i = new AccessibilityServiceInfo();
-                  i.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                          | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED;
-                  i.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
-                  i.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-                          | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
-                  i.notificationTimeout = 100;
-                  setServiceInfo(i);
-              }
-
-              @Override
               public void onAccessibilityEvent(AccessibilityEvent e) {
                   if (e.getPackageName() == null) return;
                   String p = e.getPackageName().toString();
@@ -141,16 +143,32 @@ jobs:
                   long now = System.currentTimeMillis();
                   if (now - lastRun < 400) return;
                   lastRun = now;
-                  AccessibilityNodeInfo root = getRootInActiveWindow();
-                  if (root == null) root = e.getSource();
-                  if (root == null) return;
-                  StringBuilder sb = new StringBuilder();
-                  walk(root, sb, 0);
-                  String t = sb.toString();
-                  if (t.isEmpty()) t = "(no readable text)";
+                  AccessibilityNodeInfo root = findRoot(p, e);
+                  String t;
+                  if (root == null) {
+                      t = "(root is null)";
+                  } else {
+                      StringBuilder sb = new StringBuilder();
+                      walk(root, sb, 0);
+                      t = sb.toString();
+                      if (t.isEmpty()) t = "(no readable text)";
+                  }
                   if (t.equals(lastText)) return;
                   lastText = t;
                   save(p, t);
+              }
+
+              AccessibilityNodeInfo findRoot(String p, AccessibilityEvent e) {
+                  AccessibilityNodeInfo r = getRootInActiveWindow();
+                  if (r != null && p.equals(String.valueOf(r.getPackageName()))) return r;
+                  java.util.List<android.view.accessibility.AccessibilityWindowInfo> ws = getWindows();
+                  if (ws != null) {
+                      for (android.view.accessibility.AccessibilityWindowInfo w : ws) {
+                          AccessibilityNodeInfo wr = w.getRoot();
+                          if (wr != null && p.equals(String.valueOf(wr.getPackageName()))) return wr;
+                      }
+                  }
+                  return e.getSource();
               }
 
               void walk(AccessibilityNodeInfo n, StringBuilder sb, int d) {
@@ -285,8 +303,8 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "OfferWatch 2. Service is ON. Open the Bolt driver app and wait for a ride request."
-                          : "OfferWatch 2. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
+                          ? "OfferWatch 2 v3. Service is ON. Open the Bolt driver app and wait for a ride request."
+                          : "OfferWatch 2 v3. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
                   dump.setText(t.isEmpty() ? "No captures yet." : t);
               }
