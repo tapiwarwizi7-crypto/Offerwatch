@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 4
-                  versionName '0.4'
+                  versionCode 5
+                  versionName '0.5'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -117,16 +117,21 @@ jobs:
           import android.accessibilityservice.AccessibilityService;
           import android.content.Context;
           import android.content.SharedPreferences;
+          import android.graphics.Canvas;
           import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.Path;
           import android.graphics.PixelFormat;
           import android.graphics.Typeface;
           import android.os.Handler;
           import android.os.Looper;
           import android.view.Gravity;
+          import android.view.View;
           import android.view.WindowManager;
           import android.view.accessibility.AccessibilityEvent;
           import android.view.accessibility.AccessibilityNodeInfo;
           import android.view.accessibility.AccessibilityWindowInfo;
+          import android.widget.FrameLayout;
           import android.widget.TextView;
           import java.io.ByteArrayOutputStream;
           import java.io.File;
@@ -147,6 +152,74 @@ jobs:
               static final Pattern LEG = Pattern.compile("(\\d+)\\s*min\\D+([0-9.,]+)\\s*km");
               static OfferService inst;
 
+              // ---- AVOID LISTS: add new places here, one per line, lowercase, in quotes ----
+              // Purple corner when the PICKUP address contains any of these:
+              static final String[] AVOID_PICKUP = {
+                      "yeoville",
+                      "hillbrow",
+                      "berea",
+                      "johannesburg cbd", "joburg cbd", "jozi cbd", "johannesburg central",
+                      "reiger park", "riegerpark",
+                      "eldorado park", "eldoradopark",
+                      "riverlea",
+                      "marshalltown",
+                      "ferreirasdorp",
+                      "newtown",
+                      "fordsburg",
+                      "doornfontein",
+                      "jeppestown",
+                      "bertrams",
+                      "troyeville",
+                      "braamfontein",
+                      "joubert park",
+                      "selby",
+                      "vrededorp",
+                      "pageview",
+                      "wemmer",
+                      "bellevue",
+                      "bez valley",
+                      "malvern",
+                      "booysens",
+                      "mayfair",
+                      "brixton"
+              };
+              // Whole banner turns purple when pickup OR drop-off contains any of these:
+              static final String[] AVOID_BOTH = {
+                      "alexandra"
+              };
+
+              static String match(String text, String[] list) {
+                  if (text == null) return null;
+                  String t = text.toLowerCase(Locale.ROOT);
+                  for (String s : list) {
+                      if (t.contains(s)) return s;
+                  }
+                  return null;
+              }
+
+              static class CornerView extends View {
+                  final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  final Path path = new Path();
+
+                  CornerView(Context c) {
+                      super(c);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      int w = getWidth();
+                      int hh = getHeight();
+                      path.reset();
+                      path.moveTo(0, 0);
+                      path.lineTo(w, 0);
+                      path.lineTo(w, hh);
+                      path.close();
+                      p.setStyle(Paint.Style.FILL);
+                      p.setColor(0xFFAA00FF);
+                      c.drawPath(path, p);
+                  }
+              }
+
               final Handler h = new Handler(Looper.getMainLooper());
               final Runnable hideTask = new Runnable() {
                   @Override
@@ -155,7 +228,9 @@ jobs:
                   }
               };
               WindowManager wm;
-              TextView banner;
+              FrameLayout banner;
+              TextView bannerText;
+              CornerView corner;
               long lastRun = 0;
               String lastKey = "";
               String lastUnparsed = "";
@@ -249,15 +324,19 @@ jobs:
                   double cost = sp.getFloat("cost", 2.5f);
                   double perKm = fare / total;
                   double profit = fare - total * cost;
-                  boolean avoid = false;
+                  // Places come in order from the screen: first = pickup, second = drop-off
+                  String avoidName = null;
                   for (String pl : places) {
-                      if (pl.toLowerCase(Locale.ROOT).contains("alexandra")) avoid = true;
+                      String m = match(pl, AVOID_BOTH);
+                      if (m != null) avoidName = m;
                   }
+                  boolean avoid = avoidName != null;
+                  boolean cornerOn = !places.isEmpty() && match(places.get(0), AVOID_PICKUP) != null;
                   String verdict;
                   int bg;
                   int fg = Color.WHITE;
                   if (avoid) {
-                      verdict = "AVOID - Alexandra";
+                      verdict = "AVOID - " + avoidName.substring(0, 1).toUpperCase(Locale.ROOT) + avoidName.substring(1);
                       bg = 0xEE6A1B9A;
                   } else if (perKm < floor || profit < 0) {
                       verdict = "DECLINE";
@@ -275,27 +354,36 @@ jobs:
                   if (mins > 0) {
                       l3 += String.format(Locale.US, " (R%.0f/h)", profit / (mins / 60.0));
                   }
-                  String key = verdict + l2 + l3;
+                  String key = verdict + l2 + l3 + cornerOn;
                   if (key.equals(lastKey) && banner != null) {
                       h.removeCallbacks(hideTask);
                       h.postDelayed(hideTask, 20000);
                       return;
                   }
                   lastKey = key;
-                  showBanner(verdict + "\n" + l2 + "\n" + l3, bg, fg);
-                  save("OFFER", l2 + " | " + l3 + " -> " + verdict);
+                  showBanner(verdict + "\n" + l2 + "\n" + l3, bg, fg, cornerOn);
+                  save("OFFER", l2 + " | " + l3 + " -> " + verdict + (cornerOn ? " [PURPLE CORNER pickup: " + places.get(0) + "]" : ""));
               }
 
-              void showBanner(String text, int bg, int fg) {
+              void showBanner(String text, int bg, int fg, boolean showCorner) {
                   try {
                       if (wm == null) wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
                       if (banner == null) {
                           float d = getResources().getDisplayMetrics().density;
+                          FrameLayout fl = new FrameLayout(this);
                           TextView tv = new TextView(this);
                           tv.setGravity(Gravity.CENTER);
                           tv.setTypeface(null, Typeface.BOLD);
                           tv.setTextSize(20);
                           tv.setPadding((int) (12 * d), (int) (36 * d), (int) (12 * d), (int) (12 * d));
+                          fl.addView(tv, new FrameLayout.LayoutParams(
+                                  FrameLayout.LayoutParams.MATCH_PARENT,
+                                  FrameLayout.LayoutParams.WRAP_CONTENT));
+                          CornerView cv = new CornerView(this);
+                          int size = (int) (56 * d);
+                          FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(size, size);
+                          clp.gravity = Gravity.TOP | Gravity.END;
+                          fl.addView(cv, clp);
                           WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                                   WindowManager.LayoutParams.MATCH_PARENT,
                                   WindowManager.LayoutParams.WRAP_CONTENT,
@@ -305,12 +393,15 @@ jobs:
                                           | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                                   PixelFormat.TRANSLUCENT);
                           lp.gravity = Gravity.TOP;
-                          wm.addView(tv, lp);
-                          banner = tv;
+                          wm.addView(fl, lp);
+                          banner = fl;
+                          bannerText = tv;
+                          corner = cv;
                       }
-                      banner.setText(text);
-                      banner.setBackgroundColor(bg);
-                      banner.setTextColor(fg);
+                      bannerText.setText(text);
+                      bannerText.setBackgroundColor(bg);
+                      bannerText.setTextColor(fg);
+                      corner.setVisibility(showCorner ? View.VISIBLE : View.GONE);
                       h.removeCallbacks(hideTask);
                       h.postDelayed(hideTask, 20000);
                   } catch (Exception ex) {
@@ -332,7 +423,7 @@ jobs:
               void demo() {
                   lastKey = "";
                   showBanner("ACCEPT (test)\nR45.00 | 6.0 km total | R7.50/km\nPickup 1.0 km | profit about R30",
-                          0xEE2E7D32, Color.WHITE);
+                          0xEE2E7D32, Color.WHITE, true);
                   h.removeCallbacks(hideTask);
                   h.postDelayed(hideTask, 6000);
               }
@@ -501,8 +592,8 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "OfferWatch 2 v4. Service is ON. Open Bolt and go online. A colored banner shows on each request."
-                          : "OfferWatch 2 v4. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
+                          ? "OfferWatch 2 v5. Service is ON. Open Bolt and go online. A colored banner shows on each request."
+                          : "OfferWatch 2 v5. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
                   dump.setText(t.isEmpty() ? "No offers logged yet." : t);
               }
