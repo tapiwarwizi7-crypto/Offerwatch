@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 3
-                  versionName '0.3'
+                  versionCode 4
+                  versionName '0.4'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -115,92 +115,263 @@ jobs:
           package com.offerwatch;
 
           import android.accessibilityservice.AccessibilityService;
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.graphics.Typeface;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.Gravity;
+          import android.view.WindowManager;
           import android.view.accessibility.AccessibilityEvent;
           import android.view.accessibility.AccessibilityNodeInfo;
-          import android.widget.Toast;
+          import android.view.accessibility.AccessibilityWindowInfo;
+          import android.widget.TextView;
           import java.io.ByteArrayOutputStream;
           import java.io.File;
           import java.io.FileInputStream;
           import java.io.FileOutputStream;
           import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
           import java.util.Date;
+          import java.util.List;
           import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
 
           public class OfferService extends AccessibilityService {
               static final String FILE = "captures.txt";
+              static final String BOLT = "ee.mtakso.driver";
+              static final Pattern MONEY = Pattern.compile("R\\s*([0-9][0-9 ,.]*)");
+              static final Pattern LEG = Pattern.compile("(\\d+)\\s*min\\D+([0-9.,]+)\\s*km");
+              static OfferService inst;
+
+              final Handler h = new Handler(Looper.getMainLooper());
+              final Runnable hideTask = new Runnable() {
+                  @Override
+                  public void run() {
+                      hideBanner();
+                  }
+              };
+              WindowManager wm;
+              TextView banner;
               long lastRun = 0;
-              String lastText = "";
-              java.util.HashSet<String> seen = new java.util.HashSet<>();
+              String lastKey = "";
+              String lastUnparsed = "";
+
+              @Override
+              protected void onServiceConnected() {
+                  super.onServiceConnected();
+                  inst = this;
+              }
+
+              @Override
+              public void onDestroy() {
+                  inst = null;
+                  hideBanner();
+                  super.onDestroy();
+              }
 
               @Override
               public void onAccessibilityEvent(AccessibilityEvent e) {
                   if (e.getPackageName() == null) return;
-                  String p = e.getPackageName().toString();
-                  if (p.equals(getPackageName())) return;
-                  if (seen.add(p)) save("seen-package", p);
-                  boolean driver = p.contains("bolt") || p.contains("mtakso") || p.contains("uber");
-                  if (!driver) return;
+                  if (!BOLT.equals(e.getPackageName().toString())) return;
                   long now = System.currentTimeMillis();
-                  if (now - lastRun < 400) return;
+                  if (now - lastRun < 300) return;
                   lastRun = now;
-                  AccessibilityNodeInfo root = findRoot(p, e);
-                  String t;
-                  if (root == null) {
-                      t = "(root is null)";
-                  } else {
-                      StringBuilder sb = new StringBuilder();
-                      walk(root, sb, 0);
-                      t = sb.toString();
-                      if (t.isEmpty()) t = "(no readable text)";
-                  }
-                  if (t.equals(lastText)) return;
-                  lastText = t;
-                  save(p, t);
+                  AccessibilityNodeInfo root = findRoot(e);
+                  if (root == null) return;
+                  List<String[]> nodes = new ArrayList<>();
+                  collect(root, nodes, 0);
+                  if (nodes.isEmpty()) return;
+                  handle(nodes);
               }
 
-              AccessibilityNodeInfo findRoot(String p, AccessibilityEvent e) {
+              void handle(List<String[]> nodes) {
+                  String fareText = null;
+                  boolean isOffer = false;
+                  List<String> legs = new ArrayList<>();
+                  List<String> places = new ArrayList<>();
+                  StringBuilder dump = new StringBuilder();
+                  for (String[] n : nodes) {
+                      String t = n[0];
+                      String id = n[1];
+                      dump.append(t).append(" | ").append(id).append("\n");
+                      if (id.endsWith(":id/tripInfo")) fareText = t;
+                      else if (id.endsWith(":id/routeTitle")) legs.add(t);
+                      else if (id.endsWith(":id/routeSubtitle")) places.add(t);
+                      else if (id.endsWith(":id/buttonDecline")) isOffer = true;
+                  }
+                  if (!isOffer) {
+                      if (banner != null && nodes.size() >= 5) hideBanner();
+                      return;
+                  }
+                  double fare = -1;
+                  if (fareText != null) {
+                      Matcher m = MONEY.matcher(fareText);
+                      if (m.find()) {
+                          try {
+                              fare = Double.parseDouble(m.group(1).replace(",", "").replace(" ", ""));
+                          } catch (Exception ex) {
+                              fare = -1;
+                          }
+                      }
+                  }
+                  List<Double> kms = new ArrayList<>();
+                  double mins = 0;
+                  for (String l : legs) {
+                      Matcher m = LEG.matcher(l);
+                      if (m.find()) {
+                          try {
+                              mins += Double.parseDouble(m.group(1));
+                              kms.add(Double.parseDouble(m.group(2).replace(",", ".")));
+                          } catch (Exception ex) {
+                              // skip this line
+                          }
+                      }
+                  }
+                  if (fare < 0 || kms.size() < 2) {
+                      String d = dump.toString();
+                      if (!d.equals(lastUnparsed)) {
+                          lastUnparsed = d;
+                          save("UNPARSED OFFER", d);
+                      }
+                      return;
+                  }
+                  double pick = kms.get(0);
+                  double trip = kms.get(kms.size() - 1);
+                  double total = pick + trip;
+                  if (total <= 0) return;
+                  SharedPreferences sp = getSharedPreferences("ow", MODE_PRIVATE);
+                  double floor = sp.getFloat("floor", 4.0f);
+                  double goal = sp.getFloat("goal", 5.5f);
+                  double cost = sp.getFloat("cost", 2.5f);
+                  double perKm = fare / total;
+                  double profit = fare - total * cost;
+                  boolean avoid = false;
+                  for (String pl : places) {
+                      if (pl.toLowerCase(Locale.ROOT).contains("alexandra")) avoid = true;
+                  }
+                  String verdict;
+                  int bg;
+                  int fg = Color.WHITE;
+                  if (avoid) {
+                      verdict = "AVOID - Alexandra";
+                      bg = 0xEE6A1B9A;
+                  } else if (perKm < floor || profit < 0) {
+                      verdict = "DECLINE";
+                      bg = 0xEEC62828;
+                  } else if (perKm >= goal) {
+                      verdict = "ACCEPT";
+                      bg = 0xEE2E7D32;
+                  } else {
+                      verdict = "BORDERLINE";
+                      bg = 0xEEF9A825;
+                      fg = Color.BLACK;
+                  }
+                  String l2 = String.format(Locale.US, "R%.2f | %.1f km total | R%.2f/km", fare, total, perKm);
+                  String l3 = String.format(Locale.US, "Pickup %.1f km | profit about R%.0f", pick, profit);
+                  if (mins > 0) {
+                      l3 += String.format(Locale.US, " (R%.0f/h)", profit / (mins / 60.0));
+                  }
+                  String key = verdict + l2 + l3;
+                  if (key.equals(lastKey) && banner != null) {
+                      h.removeCallbacks(hideTask);
+                      h.postDelayed(hideTask, 20000);
+                      return;
+                  }
+                  lastKey = key;
+                  showBanner(verdict + "\n" + l2 + "\n" + l3, bg, fg);
+                  save("OFFER", l2 + " | " + l3 + " -> " + verdict);
+              }
+
+              void showBanner(String text, int bg, int fg) {
+                  try {
+                      if (wm == null) wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                      if (banner == null) {
+                          float d = getResources().getDisplayMetrics().density;
+                          TextView tv = new TextView(this);
+                          tv.setGravity(Gravity.CENTER);
+                          tv.setTypeface(null, Typeface.BOLD);
+                          tv.setTextSize(20);
+                          tv.setPadding((int) (12 * d), (int) (36 * d), (int) (12 * d), (int) (12 * d));
+                          WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                                  WindowManager.LayoutParams.MATCH_PARENT,
+                                  WindowManager.LayoutParams.WRAP_CONTENT,
+                                  WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                          | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                          | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                                  PixelFormat.TRANSLUCENT);
+                          lp.gravity = Gravity.TOP;
+                          wm.addView(tv, lp);
+                          banner = tv;
+                      }
+                      banner.setText(text);
+                      banner.setBackgroundColor(bg);
+                      banner.setTextColor(fg);
+                      h.removeCallbacks(hideTask);
+                      h.postDelayed(hideTask, 20000);
+                  } catch (Exception ex) {
+                      banner = null;
+                  }
+              }
+
+              void hideBanner() {
+                  try {
+                      if (banner != null && wm != null) wm.removeView(banner);
+                  } catch (Exception ex) {
+                      // ignore
+                  }
+                  banner = null;
+                  lastKey = "";
+                  h.removeCallbacks(hideTask);
+              }
+
+              void demo() {
+                  lastKey = "";
+                  showBanner("ACCEPT (test)\nR45.00 | 6.0 km total | R7.50/km\nPickup 1.0 km | profit about R30",
+                          0xEE2E7D32, Color.WHITE);
+                  h.removeCallbacks(hideTask);
+                  h.postDelayed(hideTask, 6000);
+              }
+
+              AccessibilityNodeInfo findRoot(AccessibilityEvent e) {
                   AccessibilityNodeInfo r = getRootInActiveWindow();
-                  if (r != null && p.equals(String.valueOf(r.getPackageName()))) return r;
-                  java.util.List<android.view.accessibility.AccessibilityWindowInfo> ws = getWindows();
+                  if (r != null && BOLT.equals(String.valueOf(r.getPackageName()))) return r;
+                  List<AccessibilityWindowInfo> ws = getWindows();
                   if (ws != null) {
-                      for (android.view.accessibility.AccessibilityWindowInfo w : ws) {
+                      for (AccessibilityWindowInfo w : ws) {
                           AccessibilityNodeInfo wr = w.getRoot();
-                          if (wr != null && p.equals(String.valueOf(wr.getPackageName()))) return wr;
+                          if (wr != null && BOLT.equals(String.valueOf(wr.getPackageName()))) return wr;
                       }
                   }
                   return e.getSource();
               }
 
-              void walk(AccessibilityNodeInfo n, StringBuilder sb, int d) {
+              void collect(AccessibilityNodeInfo n, List<String[]> out, int d) {
                   if (n == null || d > 40) return;
                   CharSequence tx = n.getText();
-                  CharSequence cd = n.getContentDescription();
                   String id = n.getViewIdResourceName();
-                  boolean hasTx = tx != null && tx.length() > 0;
-                  boolean hasCd = cd != null && cd.length() > 0;
-                  if (hasTx || hasCd) {
-                      sb.append(hasTx ? tx : "").append(" | ")
-                        .append(hasCd ? cd : "").append(" | ")
-                        .append(id == null ? "" : id).append("\n");
+                  if (tx != null && tx.length() > 0) {
+                      out.add(new String[]{tx.toString(), id == null ? "" : id});
                   }
                   for (int i = 0; i < n.getChildCount(); i++) {
-                      walk(n.getChild(i), sb, d + 1);
+                      collect(n.getChild(i), out, d + 1);
                   }
               }
 
-              void save(String pkg, String text) {
+              void save(String tag, String text) {
                   try {
                       File f = new File(getFilesDir(), FILE);
                       String old = read(f);
                       String stamp = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
-                      String all = "=== " + stamp + " " + pkg + "\n" + text + "\n" + old;
+                      String all = "=== " + stamp + " " + tag + "\n" + text + "\n" + old;
                       if (all.length() > 40000) all = all.substring(0, 40000);
                       FileOutputStream out = new FileOutputStream(f);
                       out.write(all.getBytes("UTF-8"));
                       out.close();
-                      if (!pkg.equals("seen-package")) {
-                          Toast.makeText(this, "OfferWatch captured a screen", Toast.LENGTH_SHORT).show();
-                      }
                   } catch (Exception ex) {
                       // ignore
                   }
@@ -234,11 +405,13 @@ jobs:
           import android.content.ClipboardManager;
           import android.content.Context;
           import android.content.Intent;
+          import android.content.SharedPreferences;
           import android.os.Bundle;
           import android.provider.Settings;
+          import android.text.InputType;
           import android.view.View;
-          import android.view.ViewGroup;
           import android.widget.Button;
+          import android.widget.EditText;
           import android.widget.LinearLayout;
           import android.widget.ScrollView;
           import android.widget.TextView;
@@ -248,10 +421,15 @@ jobs:
           public class MainActivity extends Activity {
               TextView status;
               TextView dump;
+              EditText fFloor;
+              EditText fGoal;
+              EditText fCost;
+              SharedPreferences sp;
 
               @Override
               protected void onCreate(Bundle b) {
                   super.onCreate(b);
+                  sp = getSharedPreferences("ow", MODE_PRIVATE);
                   int p = (int) (16 * getResources().getDisplayMetrics().density);
                   LinearLayout root = new LinearLayout(this);
                   root.setOrientation(LinearLayout.VERTICAL);
@@ -261,21 +439,41 @@ jobs:
                   root.addView(status);
                   root.addView(btn("Open accessibility settings", v ->
                           startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
-                  root.addView(btn("Refresh", v -> refresh()));
-                  root.addView(btn("Copy captures", v -> copy()));
-                  root.addView(btn("Share captures", v -> share()));
-                  root.addView(btn("Clear", v -> {
+                  root.addView(btn("Test banner", v -> {
+                      if (OfferService.inst != null) {
+                          OfferService.inst.demo();
+                      } else {
+                          Toast.makeText(this, "Service is off", Toast.LENGTH_SHORT).show();
+                      }
+                  }));
+                  fFloor = num(root, "Decline below (R per km, Bolt fare is already net)", "floor", 4.0f);
+                  fGoal = num(root, "Accept from (R per km)", "goal", 5.5f);
+                  fCost = num(root, "Running cost (R per km)", "cost", 2.5f);
+                  root.addView(btn("Save settings", v -> saveSettings()));
+                  root.addView(btn("Refresh log", v -> refresh()));
+                  root.addView(btn("Copy log", v -> copy()));
+                  root.addView(btn("Clear log", v -> {
                       new File(getFilesDir(), OfferService.FILE).delete();
                       refresh();
                   }));
-                  ScrollView sv = new ScrollView(this);
                   dump = new TextView(this);
                   dump.setTextIsSelectable(true);
                   dump.setTextSize(12);
-                  sv.addView(dump);
-                  root.addView(sv, new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-                  setContentView(root);
+                  root.addView(dump);
+                  ScrollView sv = new ScrollView(this);
+                  sv.addView(root);
+                  setContentView(sv);
+              }
+
+              EditText num(LinearLayout root, String label, String key, float def) {
+                  TextView l = new TextView(this);
+                  l.setText(label);
+                  root.addView(l);
+                  EditText e = new EditText(this);
+                  e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+                  e.setText(String.valueOf(sp.getFloat(key, def)));
+                  root.addView(e);
+                  return e;
               }
 
               Button btn(String t, View.OnClickListener l) {
@@ -303,23 +501,29 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "OfferWatch 2 v3. Service is ON. Open the Bolt driver app and wait for a ride request."
-                          : "OfferWatch 2 v3. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
+                          ? "OfferWatch 2 v4. Service is ON. Open Bolt and go online. A colored banner shows on each request."
+                          : "OfferWatch 2 v4. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
-                  dump.setText(t.isEmpty() ? "No captures yet." : t);
+                  dump.setText(t.isEmpty() ? "No offers logged yet." : t);
+              }
+
+              void saveSettings() {
+                  try {
+                      sp.edit()
+                              .putFloat("floor", Float.parseFloat(fFloor.getText().toString()))
+                              .putFloat("goal", Float.parseFloat(fGoal.getText().toString()))
+                              .putFloat("cost", Float.parseFloat(fCost.getText().toString()))
+                              .apply();
+                      Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
+                  } catch (Exception ex) {
+                      Toast.makeText(this, "Enter numbers only", Toast.LENGTH_SHORT).show();
+                  }
               }
 
               void copy() {
                   ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                  cm.setPrimaryClip(ClipData.newPlainText("captures", captures()));
+                  cm.setPrimaryClip(ClipData.newPlainText("log", captures()));
                   Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
-              }
-
-              void share() {
-                  Intent i = new Intent(Intent.ACTION_SEND);
-                  i.setType("text/plain");
-                  i.putExtra(Intent.EXTRA_TEXT, captures());
-                  startActivity(Intent.createChooser(i, "Share captures"));
               }
           }
           EOF
