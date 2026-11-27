@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 7
-                  versionName '0.7'
+                  versionCode 8
+                  versionName '0.8'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -181,7 +181,14 @@ jobs:
                       "malvern",
                       "booysens",
                       "mayfair",
-                      "brixton"
+                      "brixton",
+                      "linbro park",
+                      "alex mall",
+                      "marlboro",
+                      "far east bank",
+                      "sejwetla",
+                      "wynberg",
+                      "pan africa"
               };
               // Whole banner turns purple when pickup OR drop-off contains any of these:
               static final String[] AVOID_BOTH = {
@@ -649,8 +656,8 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "OfferWatch 2 v7. Service is ON. Open Bolt and go online. A colored banner shows on each request."
-                          : "OfferWatch 2 v7. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
+                          ? "OfferWatch 2 v8. Service is ON. Open Bolt and go online. A colored banner shows on each request."
+                          : "OfferWatch 2 v8. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
                   dump.setText(t.isEmpty() ? "No offers logged yet." : t);
               }
