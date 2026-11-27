@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 6
-                  versionName '0.6'
+                  versionCode 7
+                  versionName '0.7'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -188,6 +188,12 @@ jobs:
                       "alexandra"
               };
 
+              // ---- SHORT TRIP RULE (total km = pickup + trip) ----
+              static final double SHORT_KM = 6.0;              // trips this short or shorter get the stricter test
+              static final double SHORT_DECLINE_PROFIT = 12.0; // profit below this = DECLINE
+              static final double SHORT_ACCEPT_PROFIT = 20.0;  // profit needed for ACCEPT
+              static final double SHORT_ACCEPT_PERKM = 6.5;    // R per km needed for ACCEPT
+
               // Green corner (top-left) when the DROP-OFF address contains any of these (malls, hubs, busy places
               // where a return trip is likely). Edit this list to match where YOU find return trips.
               static final String[] BUSY_DROP = {
@@ -197,7 +203,12 @@ jobs:
                       "fourways mall", "northgate", "clearwater mall", "greenstone",
                       "brightwater", "the glen", "killarney mall", "bruma lake",
                       "o.r. tambo", "or tambo", "o r tambo", "oliver tambo",
-                      "gautrain", "park station"
+                      "gautrain", "park station",
+                      "fourways", "morningside",
+                      "home affairs", "department of", "sassa",
+                      "sars branch", "sars office",
+                      "traffic department", "licensing", "drivers licence", "driving licence",
+                      "magistrate", "high court", "civic centre"
               };
 
               static String match(String text, String[] list) {
@@ -368,6 +379,13 @@ jobs:
                   } else if (perKm < floor || profit < 0) {
                       verdict = "DECLINE";
                       bg = 0xEEC62828;
+                  } else if (total <= SHORT_KM && profit < SHORT_DECLINE_PROFIT) {
+                      verdict = "DECLINE";
+                      bg = 0xEEC62828;
+                  } else if (total <= SHORT_KM && (profit < SHORT_ACCEPT_PROFIT || perKm < SHORT_ACCEPT_PERKM)) {
+                      verdict = "BORDERLINE";
+                      bg = 0xEEF9A825;
+                      fg = Color.BLACK;
                   } else if (perKm >= goal) {
                       verdict = "ACCEPT";
                       bg = 0xEE2E7D32;
@@ -527,143 +545,4 @@ jobs:
           }
           EOF
 
-          cat > app/src/main/java/com/offerwatch/MainActivity.java <<'EOF'
-          package com.offerwatch;
-
-          import android.app.Activity;
-          import android.content.ClipData;
-          import android.content.ClipboardManager;
-          import android.content.Context;
-          import android.content.Intent;
-          import android.content.SharedPreferences;
-          import android.os.Bundle;
-          import android.provider.Settings;
-          import android.text.InputType;
-          import android.view.View;
-          import android.widget.Button;
-          import android.widget.EditText;
-          import android.widget.LinearLayout;
-          import android.widget.ScrollView;
-          import android.widget.TextView;
-          import android.widget.Toast;
-          import java.io.File;
-
-          public class MainActivity extends Activity {
-              TextView status;
-              TextView dump;
-              EditText fFloor;
-              EditText fGoal;
-              EditText fCost;
-              SharedPreferences sp;
-
-              @Override
-              protected void onCreate(Bundle b) {
-                  super.onCreate(b);
-                  sp = getSharedPreferences("ow", MODE_PRIVATE);
-                  int p = (int) (16 * getResources().getDisplayMetrics().density);
-                  LinearLayout root = new LinearLayout(this);
-                  root.setOrientation(LinearLayout.VERTICAL);
-                  root.setPadding(p, p * 2, p, p);
-                  status = new TextView(this);
-                  status.setTextSize(18);
-                  root.addView(status);
-                  root.addView(btn("Open accessibility settings", v ->
-                          startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
-                  root.addView(btn("Test banner", v -> {
-                      if (OfferService.inst != null) {
-                          OfferService.inst.demo();
-                      } else {
-                          Toast.makeText(this, "Service is off", Toast.LENGTH_SHORT).show();
-                      }
-                  }));
-                  fFloor = num(root, "Decline below (R per km, Bolt fare is already net)", "floor", 4.0f);
-                  fGoal = num(root, "Accept from (R per km)", "goal", 5.5f);
-                  fCost = num(root, "Running cost (R per km)", "cost", 2.5f);
-                  root.addView(btn("Save settings", v -> saveSettings()));
-                  root.addView(btn("Refresh log", v -> refresh()));
-                  root.addView(btn("Copy log", v -> copy()));
-                  root.addView(btn("Clear log", v -> {
-                      new File(getFilesDir(), OfferService.FILE).delete();
-                      refresh();
-                  }));
-                  dump = new TextView(this);
-                  dump.setTextIsSelectable(true);
-                  dump.setTextSize(12);
-                  root.addView(dump);
-                  ScrollView sv = new ScrollView(this);
-                  sv.addView(root);
-                  setContentView(sv);
-              }
-
-              EditText num(LinearLayout root, String label, String key, float def) {
-                  TextView l = new TextView(this);
-                  l.setText(label);
-                  root.addView(l);
-                  EditText e = new EditText(this);
-                  e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-                  e.setText(String.valueOf(sp.getFloat(key, def)));
-                  root.addView(e);
-                  return e;
-              }
-
-              Button btn(String t, View.OnClickListener l) {
-                  Button x = new Button(this);
-                  x.setText(t);
-                  x.setOnClickListener(l);
-                  return x;
-              }
-
-              @Override
-              protected void onResume() {
-                  super.onResume();
-                  refresh();
-              }
-
-              boolean enabled() {
-                  String s = Settings.Secure.getString(getContentResolver(),
-                          Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-                  return s != null && s.contains(getPackageName() + "/");
-              }
-
-              String captures() {
-                  return OfferService.read(new File(getFilesDir(), OfferService.FILE));
-              }
-
-              void refresh() {
-                  status.setText(enabled()
-                          ? "OfferWatch 2 v6. Service is ON. Open Bolt and go online. A colored banner shows on each request."
-                          : "OfferWatch 2 v6. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
-                  String t = captures();
-                  dump.setText(t.isEmpty() ? "No offers logged yet." : t);
-              }
-
-              void saveSettings() {
-                  try {
-                      sp.edit()
-                              .putFloat("floor", Float.parseFloat(fFloor.getText().toString()))
-                              .putFloat("goal", Float.parseFloat(fGoal.getText().toString()))
-                              .putFloat("cost", Float.parseFloat(fCost.getText().toString()))
-                              .apply();
-                      Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
-                  } catch (Exception ex) {
-                      Toast.makeText(this, "Enter numbers only", Toast.LENGTH_SHORT).show();
-                  }
-              }
-
-              void copy() {
-                  ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                  cm.setPrimaryClip(ClipData.newPlainText("log", captures()));
-                  Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
-              }
-          }
-          EOF
-
-      - name: Build
-        run: gradle assembleDebug --no-daemon
-
-      - name: Publish APK
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: OfferWatch build ${{ github.run_number }}
-          files: app/build/outputs/apk/debug/app-debug.apk
+          cat > a
