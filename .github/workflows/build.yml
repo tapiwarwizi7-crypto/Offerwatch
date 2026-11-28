@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.offerwatch.two'
                   minSdk 26
                   targetSdk 34
-                  versionCode 8
-                  versionName '0.8'
+                  versionCode 9
+                  versionName '0.9'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -150,6 +150,8 @@ jobs:
               static final String BOLT = "ee.mtakso.driver";
               static final Pattern MONEY = Pattern.compile("R\\s*([0-9][0-9 ,.]*)");
               static final Pattern LEG = Pattern.compile("(\\d+)\\s*min\\D+([0-9.,]+)\\s*km");
+              static final Pattern RIDER_COUNT = Pattern.compile("\\((\\d+)\\)\\s*$");
+              static final Pattern RIDER_RATING = Pattern.compile("(\\d\\.\\d+)");
               static OfferService inst;
 
               // ---- AVOID LISTS: add new places here, one per line, lowercase, in quotes ----
@@ -200,6 +202,10 @@ jobs:
               static final double SHORT_DECLINE_PROFIT = 12.0; // profit below this = DECLINE
               static final double SHORT_ACCEPT_PROFIT = 20.0;  // profit needed for ACCEPT
               static final double SHORT_ACCEPT_PERKM = 6.5;    // R per km needed for ACCEPT
+
+              // ---- RIDER CHECK: riders with fewer ratings than this are flagged as new/unproven ----
+              // (Bolt shows the number of ratings in brackets, not the exact number of rides)
+              static final int RIDER_MIN_RATINGS = 50;
 
               // Green corner (top-left) when the DROP-OFF address contains any of these (malls, hubs, busy places
               // where a return trip is likely). Edit this list to match where YOU find return trips.
@@ -307,6 +313,7 @@ jobs:
 
               void handle(List<String[]> nodes) {
                   String fareText = null;
+                  String riderText = null;
                   boolean isOffer = false;
                   List<String> legs = new ArrayList<>();
                   List<String> places = new ArrayList<>();
@@ -318,6 +325,7 @@ jobs:
                       if (id.endsWith(":id/tripInfo")) fareText = t;
                       else if (id.endsWith(":id/routeTitle")) legs.add(t);
                       else if (id.endsWith(":id/routeSubtitle")) places.add(t);
+                      else if (id.endsWith(":id/riderInfoText")) riderText = t;
                       else if (id.endsWith(":id/buttonDecline")) isOffer = true;
                   }
                   if (!isOffer) {
@@ -357,7 +365,8 @@ jobs:
                       return;
                   }
                   double pick = kms.get(0);
-                  double trip = kms.get(kms.size() - 1);
+                  double trip = 0;
+                  for (int i = 1; i < kms.size(); i++) trip += kms.get(i);
                   double total = pick + trip;
                   if (total <= 0) return;
                   SharedPreferences sp = getSharedPreferences("ow", MODE_PRIVATE);
@@ -366,7 +375,7 @@ jobs:
                   double cost = sp.getFloat("cost", 2.5f);
                   double perKm = fare / total;
                   double profit = fare - total * cost;
-                  // Places come in order from the screen: first = pickup, second = drop-off
+                  // Places come in order from the screen: first = pickup, last = final drop-off
                   String avoidName = null;
                   for (String pl : places) {
                       String m = match(pl, AVOID_BOTH);
@@ -375,7 +384,21 @@ jobs:
                   boolean avoid = avoidName != null;
                   boolean cornerOn = !places.isEmpty() && match(places.get(0), AVOID_PICKUP) != null;
                   String pickAddr = places.isEmpty() ? "" : places.get(0);
-                  String dropAddr = places.size() > 1 ? places.get(1) : "";
+                  String dropAddr = places.size() > 1 ? places.get(places.size() - 1) : "";
+                  int riderCount = -1;
+                  String riderRating = "";
+                  if (riderText != null) {
+                      Matcher rm = RIDER_COUNT.matcher(riderText);
+                      if (rm.find()) {
+                          try {
+                              riderCount = Integer.parseInt(rm.group(1));
+                          } catch (Exception ex) {
+                              riderCount = -1;
+                          }
+                      }
+                      Matcher rr = RIDER_RATING.matcher(riderText);
+                      if (rr.find()) riderRating = rr.group(1);
+                  }
                   boolean busyDrop = match(dropAddr, BUSY_DROP) != null;
                   String verdict;
                   int bg;
@@ -411,16 +434,29 @@ jobs:
                       double worst = profit - trip * cost;
                       l4 = String.format(Locale.US, "Not a busy drop-off. If return is empty: profit about R%.0f", worst);
                   }
-                  String key = verdict + l2 + l3 + l4 + cornerOn + busyDrop;
+                  String l5 = "";
+                  if (riderText != null) {
+                      if (riderCount < 0) {
+                          l5 = "Rider: no ratings yet - be careful";
+                      } else if (riderCount < RIDER_MIN_RATINGS) {
+                          l5 = "NEW RIDER: only " + riderCount + " ratings - be careful";
+                      } else {
+                          l5 = "Rider: " + (riderRating.isEmpty() ? "" : riderRating + " ") + "(" + riderCount + " ratings)";
+                      }
+                  }
+                  String l6 = kms.size() > 2 ? "MULTI-STOP: " + (kms.size() - 1) + " drop-offs, distance counts all legs" : "";
+                  String key = verdict + l2 + l3 + l4 + l5 + l6 + cornerOn + busyDrop;
                   if (key.equals(lastKey) && banner != null) {
                       h.removeCallbacks(hideTask);
                       h.postDelayed(hideTask, 20000);
                       return;
                   }
                   lastKey = key;
-                  showBanner(verdict + "\n" + l2 + "\n" + l3 + (l4.isEmpty() ? "" : "\n" + l4), bg, fg, cornerOn, busyDrop);
+                  showBanner(verdict + "\n" + l2 + "\n" + l3 + (l6.isEmpty() ? "" : "\n" + l6) + (l4.isEmpty() ? "" : "\n" + l4) + (l5.isEmpty() ? "" : "\n" + l5), bg, fg, cornerOn, busyDrop);
                   save("OFFER", l2 + " | " + l3 + " -> " + verdict + (cornerOn ? " [PURPLE CORNER]" : "")
-                          + (busyDrop ? " [GREEN CORNER busy drop-off]" : "") + "\nPICKUP: " + pickAddr + "\nDROP-OFF: " + dropAddr);
+                          + (busyDrop ? " [GREEN CORNER busy drop-off]" : "") + "\nPICKUP: " + pickAddr + "\nDROP-OFF: " + dropAddr
+                          + "\nRIDER: " + (riderText == null ? "" : riderText));
+                  if (kms.size() > 2) save("MULTI-STOP RAW", dump.toString());
               }
 
               void showBanner(String text, int bg, int fg, boolean showCorner, boolean showBusy) {
@@ -656,8 +692,8 @@ jobs:
 
               void refresh() {
                   status.setText(enabled()
-                          ? "OfferWatch 2 v8. Service is ON. Open Bolt and go online. A colored banner shows on each request."
-                          : "OfferWatch 2 v8. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
+                          ? "OfferWatch 2 v9. Service is ON. Open Bolt and go online. A colored banner shows on each request."
+                          : "OfferWatch 2 v9. Service is OFF. Tap the button below, find OfferWatch 2 and turn it on.");
                   String t = captures();
                   dump.setText(t.isEmpty() ? "No offers logged yet." : t);
               }
